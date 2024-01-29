@@ -10,10 +10,13 @@ import VLCKitSPM
 
 public extension VLCVideoPlayer {
 
-    class Proxy: ObservableObject {
+    class Proxy: ObservableObject, VLCMediaThumbnailerDelegate {
 
         weak var mediaPlayer: VLCMediaPlayer?
         weak var videoPlayerView: UIVLCVideoPlayerView?
+
+        private var onTakeMediaThumbnailer: ((VLCMediaThumbnailer, CGImage) -> Void)?
+        private var onTakeMediaThumbnailerDidTimeOut: ((VLCMediaThumbnailer) -> Void)?
 
         public init() {
             self.mediaPlayer = nil
@@ -56,7 +59,7 @@ public extension VLCVideoPlayer {
         ///
         /// **Note**: If there is no valid track with the given index, the track will default to disabled
         public func setSubtitleTrack(_ index: ValueSelector<Int>) {
-            guard let mediaPlayer = mediaPlayer else { return }
+            guard let mediaPlayer else { return }
             let newTrackIndex = mediaPlayer.subtitleTrackIndex(from: index)
             mediaPlayer.currentVideoSubTitleIndex = newTrackIndex.asInt32
         }
@@ -65,7 +68,7 @@ public extension VLCVideoPlayer {
         ///
         /// **Note**: If there is no valid track with the given index, the track will default to disabled
         public func setAudioTrack(_ index: ValueSelector<Int>) {
-            guard let mediaPlayer = mediaPlayer else { return }
+            guard let mediaPlayer else { return }
             let newTrackIndex = mediaPlayer.audioTrackIndex(from: index)
             mediaPlayer.currentAudioTrackIndex = newTrackIndex.asInt32
         }
@@ -84,7 +87,7 @@ public extension VLCVideoPlayer {
 
         /// Set the player rate
         public func setRate(_ rate: ValueSelector<Float>) {
-            guard let mediaPlayer = mediaPlayer else { return }
+            guard let mediaPlayer else { return }
             let newRate = mediaPlayer.rate(from: rate)
             mediaPlayer.fastForward(atRate: newRate)
         }
@@ -99,10 +102,10 @@ public extension VLCVideoPlayer {
 
         /// Set the player time
         public func setTime(_ time: TimeSelector) {
-            guard let mediaPlayer = mediaPlayer,
+            guard let mediaPlayer,
                   let media = mediaPlayer.media else { return }
 
-            guard time.asTicks >= 0 && time.asTicks <= media.length.intValue else { return }
+            guard time.asTicks >= 0, time.asTicks <= media.length.intValue else { return }
             mediaPlayer.time = VLCTime(int: time.asTicks.asInt32)
         }
 
@@ -145,6 +148,40 @@ public extension VLCVideoPlayer {
         /// Play new media given a configuration
         public func playNewMedia(_ newConfiguration: Configuration) {
             videoPlayerView?.setupVLCMediaPlayer(with: newConfiguration)
+        }
+
+        public func fetchThumbnailer(position: Float, width: Float, height: Float) -> CGImage? {
+            let semaphore = DispatchSemaphore(value: 0)
+            var resultImage: CGImage?
+
+            if let media = self.mediaPlayer?.media {
+                let thumbnailer = VLCMediaThumbnailer(media: media, andDelegate: self)
+                thumbnailer.thumbnailWidth = CGFloat(width)
+                thumbnailer.thumbnailHeight = CGFloat(height)
+                thumbnailer.snapshotPosition = position
+                thumbnailer.fetchThumbnail()
+                
+                // This block will be called when the thumbnail is ready or an error occurred
+                self.onTakeMediaThumbnailer = { _, thumbnail in
+                    resultImage = thumbnail
+                    semaphore.signal()
+                }
+                self.onTakeMediaThumbnailerDidTimeOut = { _ in
+                    resultImage = nil
+                    semaphore.signal()
+                }
+                _ = semaphore.wait(timeout: .distantFuture)
+                return resultImage
+            }
+            return nil
+        }
+
+        func mediaThumbnailer(_ mediaThumbnailer: VLCMediaThumbnailer!, didFinishThumbnail thumbnail: CGImage!) {
+            onTakeMediaThumbnailer?(mediaThumbnailer, thumbnail)
+        }
+
+        func mediaThumbnailerDidTimeOut(_ mediaThumbnailer: VLCMediaThumbnailer!) {
+            onTakeMediaThumbnailerDidTimeOut?(mediaThumbnailer)
         }
     }
 }
